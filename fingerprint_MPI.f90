@@ -1,6 +1,7 @@
 !SAITUKO NAZ HAU PARALELIZATZEN
 
 program finger_mpi
+use mpi
 implicit none
 
 integer                                 :: n_inp
@@ -9,19 +10,27 @@ integer                                 :: natoms
 integer                                 :: nstruc
 integer                                 :: i
 integer                                 :: j
-integer, dimension(:), allocatable      :: atomType
-integer, dimension(:), allocatable      :: numIons
+integer                                 :: ierr
+integer                                 :: rank
+integer                                 :: numproc
+integer                                 :: fh
+integer                                 :: region
+integer (kind=MPI_OFFSET_KIND)          :: offset, empty
+integer, dimension(MPI_STATUS_SIZE)     :: status
+integer, dimension(:,:), allocatable    :: atomType
+integer, dimension(:,:), allocatable    :: numIons
 integer, dimension(:), allocatable      :: typ_i
 integer, dimension(:), allocatable      :: typ_j
 integer, dimension(:), allocatable      :: N
+real, dimension(:), allocatable         :: bucket
 real*8                                  :: Rmax
 real*8                                  :: V
 real*8                                  :: sigma
 real*8                                  :: delta
 real*8                                  :: start, finish, midle
 real*8, dimension(:), allocatable       :: order
-real*8, dimension(3,3)                  :: cell
-real*8, dimension(:,:), allocatable     :: coordinates
+real*8, dimension(:,:,:)                :: cell
+real*8, dimension(:,:,:), allocatable   :: coordinates
 real*8, dimension(:,:), allocatable     :: cos_dist
 real*8, dimension(:,:), allocatable     :: dist_matrix
 real*8, dimension(:,:,:), allocatable   :: all_fing
@@ -31,19 +40,35 @@ character(len=50)                       :: output_file
 character(len=50)                       :: strucname
 logical                                 :: fend
 
+call mpi_init(ierr)
+
+
+call MPI_COMM_RANK(MPI_COMM_WORLD,rank,ierr)
+call MPI_COMM_SIZE(MPI_COMM_WORLD,numproc,ierr)
+
+
 call get_arguments(n_inp,d,Rmax,nstruc,input_file,output_file)
 
 delta = Rmax/real(d,8)
 sigma = Rmax/real(d,8)
 
+allocate(cell(nstruc,3,3),allcoor(i,:,:))
 allocate(atomType(n_inp),numIons(n_inp))
 allocate(cos_dist(nstruc,nstruc))
 allocate(all_fing(nstruc,n_inp**2,d))
-open(unit=123,file=input_file,status='old',action='read')
+
+if (rank == 0) then
+    print*, "Irakurtzen"
+    open(unit=123,file=input_file,status='old',action='read')
+    
+    do i = 1, nstruc
+        call read_vasp(123,cell(i,:,:),atomType(i,:),numIons(i,:),coordinates(i,:,:),fend)
+    enddo
+endif
 
 call cpu_time(start)
 do i = 1, nstruc
-    call read_vasp(123,cell,atomType,numIons,coordinates,strucname,fend)
+    !call read_vasp(123,cell,atomType,numIons,coordinates,strucname,fend)
 
     if (fend) exit
     
@@ -89,6 +114,8 @@ call cpu_time(finish)
 print*, "Irakurri eta fing kalkulatu", midle-start
 print*, "Distantziak kalkulatu", finish-midle
 print*, "TOTAL", finish-start
+
+call mpi_finalize(ierr)
 contains
 SUBROUTINE COSINE_DISTANCE(FING,FING2,NUMIONS,COS_DIST)
 IMPLICIT NONE
