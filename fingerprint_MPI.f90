@@ -1,3 +1,5 @@
+!SAITUKO NAZ HAU PARALELIZATZEN
+
 program finger_mpi
 implicit none
 
