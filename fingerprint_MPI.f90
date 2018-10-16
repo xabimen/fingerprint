@@ -84,9 +84,7 @@ close(unit=124)
 
 call cpu_time(finish)
 
-print*, "Irakurri eta fing kalkulatu", midle-start
-print*, "Distantziak kalkulatu", finish-midle
-print*, "TOTAL", finish-start
+print*, nstruc, midle-start, finish-midle
 contains
 SUBROUTINE COSINE_DISTANCE(FING,FING2,NUMIONS,COS_DIST)
 IMPLICIT NONE
