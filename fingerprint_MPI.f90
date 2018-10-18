@@ -13,15 +13,16 @@ integer                                 :: j
 integer                                 :: ierr
 integer                                 :: rank
 integer                                 :: numproc
-integer                                 :: fh
-integer                                 :: region
-integer (kind=MPI_OFFSET_KIND)          :: offset, empty
-integer, dimension(MPI_STATUS_SIZE)     :: status
-integer, dimension(:,:), allocatable    :: atomType
-integer, dimension(:,:), allocatable    :: numIons
+integer                                 :: Npp
+integer                                 :: Ns2
+integer                                 :: kk
+integer                                 :: stat(MPI_STATUS_SIZE)
+integer, dimension(:), allocatable      :: atomType
+integer, dimension(:), allocatable      :: numIons
 integer, dimension(:), allocatable      :: typ_i
 integer, dimension(:), allocatable      :: typ_j
 integer, dimension(:), allocatable      :: N
+integer, dimension(:), allocatable      :: struc_pp
 real, dimension(:), allocatable         :: bucket
 real*8                                  :: Rmax
 real*8                                  :: V
@@ -29,8 +30,8 @@ real*8                                  :: sigma
 real*8                                  :: delta
 real*8                                  :: start, finish, midle
 real*8, dimension(:), allocatable       :: order
-real*8, dimension(:,:,:)                :: cell
-real*8, dimension(:,:,:), allocatable   :: coordinates
+real*8, dimension(3,3)                  :: cell
+real*8, dimension(:,:), allocatable     :: coordinates
 real*8, dimension(:,:), allocatable     :: cos_dist
 real*8, dimension(:,:), allocatable     :: dist_matrix
 real*8, dimension(:,:,:), allocatable   :: all_fing
@@ -52,23 +53,15 @@ call get_arguments(n_inp,d,Rmax,nstruc,input_file,output_file)
 delta = Rmax/real(d,8)
 sigma = Rmax/real(d,8)
 
-allocate(cell(nstruc,3,3),allcoor(i,:,:))
+allocate(struc_pp(0:numproc-1))
 allocate(atomType(n_inp),numIons(n_inp))
 allocate(cos_dist(nstruc,nstruc))
 allocate(all_fing(nstruc,n_inp**2,d))
 
-if (rank == 0) then
-    print*, "Irakurtzen"
-    open(unit=123,file=input_file,status='old',action='read')
-    
-    do i = 1, nstruc
-        call read_vasp(123,cell(i,:,:),atomType(i,:),numIons(i,:),coordinates(i,:,:),fend)
-    enddo
-endif
-
+open(unit=123,file=input_file,status='old',action='read')
 call cpu_time(start)
 do i = 1, nstruc
-    !call read_vasp(123,cell,atomType,numIons,coordinates,strucname,fend)
+    call read_vasp(123,cell,atomType,numIons,coordinates,strucname,fend)
 
     if (fend) exit
     
@@ -93,27 +86,78 @@ enddo
 
 call cpu_time(midle)
 
-do i = 1, nstruc
-    cos_dist(i,i) = 0.0
-    do j = i+1, nstruc
-        CALL COSINE_DISTANCE(all_fing(i,:,:),all_fing(j,:,:),NUMIONS,COS_DIST(i,j))
-        cos_dist(j,i) = cos_dist(i,j)
+!HAU PARALELIZATU
+!*******************************************
+
+Npp = ceiling((Nstruc**2/2.0d0-Nstruc/2.0d0)/real(numproc))
+Ns2 = nstruc
+struc_pp = 0
+do i = 0, numproc-1    
+    !if (rank==0) print*, (Ns2-0.5d0)**2-2.0d0*Npp, Ns2
+    if ((Ns2-0.5d0)**2-2.0d0*Npp >= 0.0d0) then
+        struc_pp(i) = ceiling(Ns2-0.5d0-sqrt((Ns2-0.5d0)**2-2.0d0*Npp))    
+        Ns2 = Ns2 - struc_pp(i)
+    else
+        struc_pp(i) = Ns2
+        exit
+    endif
+enddo
+
+do i = 0, numproc-1
+     if (rank==0) then
+        if (i ==0) then
+            print*, i, sum(struc_pp(:i)), -struc_pp(i)**2/2.0d0+struc_pp(i)*(nstruc-0.5d0)
+        else
+            print*, i, sum(struc_pp(:i)), -struc_pp(i)**2/2.0d0+struc_pp(i)*(nstruc-sum(struc_pp(:i-1))-0.5d0)
+        endif
+    endif
+enddo
+
+if (rank == 0) then
+    do i = 1, struc_pp(rank)
+        cos_dist(i,i) = 0.0
+        do j = i+1, nstruc
+            CALL COSINE_DISTANCE(all_fing(i,:,:),all_fing(j,:,:),NUMIONS,COS_DIST(i,j))
+            cos_dist(j,i) = cos_dist(i,j)
+        enddo
     enddo
-enddo
+else
+    do i = sum(struc_pp(:(rank-1)))+1, sum(struc_pp(:rank))
+        cos_dist(i,i) = 0.0
+        do j = i+1, nstruc
+            CALL COSINE_DISTANCE(all_fing(i,:,:),all_fing(j,:,:),NUMIONS,COS_DIST(i,j))
+            cos_dist(j,i) = cos_dist(i,j)
+        enddo
+    enddo
+endif
 
-open(unit=124,file=output_file,status='replace',action='write')
-do i = 1, nstruc
-    write(unit=124,fmt='(100000f20.8)') cos_dist(i,:)
-enddo
+if (rank /= 0) then
+    !CALL MPI_SEND(rank,1,MPI_INTEGER,0,1,MPI_COMM_WORLD,ierr)
+    CALL MPI_SEND(cos_dist(sum(struc_pp(:(rank-1)))+1:sum(struc_pp(:rank)),:),&
+            struc_pp(rank)*nstruc,MPI_DOUBLE_PRECISION,0,1,MPI_COMM_WORLD,ierr)
+elseif(rank == 0) then
+    do i = 1, numproc-1
+        !CALL MPI_RECV(kk,1,MPI_INTEGER,i,1,MPI_COMM_WORLD,stat,ierr)
+        !print*, i, kk
+        CALL MPI_RECV(cos_dist(sum(struc_pp(:(i-1)))+1:sum(struc_pp(:i)),:),struc_pp(i)*nstruc,&
+                    MPI_DOUBLE_PRECISION,i,1,MPI_COMM_WORLD,stat,ierr)
+    enddo
+    open(unit=124,file=output_file,status='replace',action='write')
+    do i = 1, nstruc
+       write(unit=124,fmt='(100000f20.8)') cos_dist(i,:)
+    enddo
 
-close(unit=123)
-close(unit=124)
+    close(unit=123)
+    close(unit=124)
 
-call cpu_time(finish)
+    call cpu_time(finish)
 
-print*, "Irakurri eta fing kalkulatu", midle-start
-print*, "Distantziak kalkulatu", finish-midle
-print*, "TOTAL", finish-start
+    print*, "Irakurri eta fing kalkulatu", midle-start
+    print*, "Distantziak kalkulatu", finish-midle
+    print*, "TOTAL", finish-start
+
+endif
+!*******************************************
 
 call mpi_finalize(ierr)
 contains
