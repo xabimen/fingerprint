@@ -60,6 +60,9 @@ allocate(all_fing(nstruc,n_inp**2,d))
 
 open(unit=123,file=input_file,status='old',action='read')
 call cpu_time(start)
+if (rank == 0) then
+    print*, "reading", nstruc, "structures and calculationg their fingerprint"
+endif
 do i = 1, nstruc
     call read_vasp(123,cell,atomType,numIons,coordinates,strucname,fend)
 
@@ -89,6 +92,8 @@ call cpu_time(midle)
 !HAU PARALELIZATU
 !*******************************************
 
+if (rank==0) print*, "Calculating distances"
+
 Npp = ceiling((Nstruc**2/2.0d0-Nstruc/2.0d0)/real(numproc))
 Ns2 = nstruc
 struc_pp = 0
@@ -103,15 +108,6 @@ do i = 0, numproc-1
     endif
 enddo
 
-do i = 0, numproc-1
-     if (rank==0) then
-        if (i ==0) then
-            print*, i, sum(struc_pp(:i)), -struc_pp(i)**2/2.0d0+struc_pp(i)*(nstruc-0.5d0)
-        else
-            print*, i, sum(struc_pp(:i)), -struc_pp(i)**2/2.0d0+struc_pp(i)*(nstruc-sum(struc_pp(:i-1))-0.5d0)
-        endif
-    endif
-enddo
 
 if (rank == 0) then
     do i = 1, struc_pp(rank)
@@ -152,9 +148,7 @@ elseif(rank == 0) then
 
     call cpu_time(finish)
 
-    print*, "Irakurri eta fing kalkulatu", midle-start
-    print*, "Distantziak kalkulatu", finish-midle
-    print*, "TOTAL", finish-start
+    print*, nstruc, midle-start, finish-midle
 
 endif
 !*******************************************
