@@ -1,4 +1,7 @@
+!SAITUKO NAZ HAU PARALELIZATZEN
+
 program finger_mpi
+use mpi
 implicit none
 
 integer                                 :: n_inp
@@ -7,11 +10,20 @@ integer                                 :: natoms
 integer                                 :: nstruc
 integer                                 :: i
 integer                                 :: j
+integer                                 :: ierr
+integer                                 :: rank
+integer                                 :: numproc
+integer                                 :: Npp
+integer                                 :: Ns2
+integer                                 :: kk
+integer                                 :: stat(MPI_STATUS_SIZE)
 integer, dimension(:), allocatable      :: atomType
 integer, dimension(:), allocatable      :: numIons
 integer, dimension(:), allocatable      :: typ_i
 integer, dimension(:), allocatable      :: typ_j
 integer, dimension(:), allocatable      :: N
+integer, dimension(:), allocatable      :: struc_pp
+real, dimension(:), allocatable         :: bucket
 real*8                                  :: Rmax
 real*8                                  :: V
 real*8                                  :: sigma
@@ -29,17 +41,28 @@ character(len=50)                       :: output_file
 character(len=50)                       :: strucname
 logical                                 :: fend
 
+call mpi_init(ierr)
+
+
+call MPI_COMM_RANK(MPI_COMM_WORLD,rank,ierr)
+call MPI_COMM_SIZE(MPI_COMM_WORLD,numproc,ierr)
+
+
 call get_arguments(n_inp,d,Rmax,nstruc,input_file,output_file)
 
 delta = Rmax/real(d,8)
 sigma = Rmax/real(d,8)
 
+allocate(struc_pp(0:numproc-1))
 allocate(atomType(n_inp),numIons(n_inp))
 allocate(cos_dist(nstruc,nstruc))
 allocate(all_fing(nstruc,n_inp**2,d))
-open(unit=123,file=input_file,status='old',action='read')
 
+open(unit=123,file=input_file,status='old',action='read')
 call cpu_time(start)
+if (rank == 0) then
+    print*, "reading", nstruc, "structures and calculationg their fingerprint"
+endif
 do i = 1, nstruc
     call read_vasp(123,cell,atomType,numIons,coordinates,strucname,fend)
 
@@ -66,25 +89,75 @@ enddo
 
 call cpu_time(midle)
 
-do i = 1, nstruc
-    cos_dist(i,i) = 0.0
-    do j = i+1, nstruc
-        CALL COSINE_DISTANCE(all_fing(i,:,:),all_fing(j,:,:),NUMIONS,COS_DIST(i,j))
-        cos_dist(j,i) = cos_dist(i,j)
+!HAU PARALELIZATU
+!*******************************************
+
+if (rank==0) print*, "Calculating distances"
+
+Npp = ceiling((Nstruc**2/2.0d0-Nstruc/2.0d0)/real(numproc))
+Ns2 = nstruc
+struc_pp = 0
+do i = 0, numproc-1    
+    !if (rank==0) print*, (Ns2-0.5d0)**2-2.0d0*Npp, Ns2
+    if ((Ns2-0.5d0)**2-2.0d0*Npp >= 0.0d0) then
+        struc_pp(i) = ceiling(Ns2-0.5d0-sqrt((Ns2-0.5d0)**2-2.0d0*Npp))    
+        Ns2 = Ns2 - struc_pp(i)
+    else
+        struc_pp(i) = Ns2
+        exit
+    endif
+enddo
+
+
+if (rank == 0) then
+    do i = 1, struc_pp(rank)
+        cos_dist(i,i) = 0.0
+        do j = i+1, nstruc
+            CALL COSINE_DISTANCE(all_fing(i,:,:),all_fing(j,:,:),NUMIONS,COS_DIST(i,j))
+            cos_dist(j,i) = cos_dist(i,j)
+        enddo
     enddo
-enddo
+else
+    do i = sum(struc_pp(:(rank-1)))+1, sum(struc_pp(:rank))
+        cos_dist(i,i) = 0.0
+        do j = i+1, nstruc
+            CALL COSINE_DISTANCE(all_fing(i,:,:),all_fing(j,:,:),NUMIONS,COS_DIST(i,j))
+            cos_dist(j,i) = cos_dist(i,j)
+        enddo
+    enddo
+endif
 
-open(unit=124,file=output_file,status='replace',action='write')
-do i = 1, nstruc
-    write(unit=124,fmt='(100000f20.8)') cos_dist(i,:)
-enddo
+if (rank /= 0) then
+    !CALL MPI_SEND(rank,1,MPI_INTEGER,0,1,MPI_COMM_WORLD,ierr)
+    CALL MPI_SEND(cos_dist(sum(struc_pp(:(rank-1)))+1:sum(struc_pp(:rank)),:),&
+            struc_pp(rank)*nstruc,MPI_DOUBLE_PRECISION,0,1,MPI_COMM_WORLD,ierr)
+elseif(rank == 0) then
+    do i = 1, numproc-1
+        !CALL MPI_RECV(kk,1,MPI_INTEGER,i,1,MPI_COMM_WORLD,stat,ierr)
+        !print*, i, kk
+        CALL MPI_RECV(cos_dist(sum(struc_pp(:(i-1)))+1:sum(struc_pp(:i)),:),struc_pp(i)*nstruc,&
+                    MPI_DOUBLE_PRECISION,i,1,MPI_COMM_WORLD,stat,ierr)
+    enddo
+    open(unit=124,file=output_file,status='replace',action='write')
+    do i = 1, nstruc
+       write(unit=124,fmt='(100000f20.8)') cos_dist(i,:)
+    enddo
 
-close(unit=123)
-close(unit=124)
+    close(unit=123)
+    close(unit=124)
 
-call cpu_time(finish)
+    call cpu_time(finish)
 
+    print*, nstruc, midle-start, finish-midle
+
+endif
+!*******************************************
+
+<<<<<<< HEAD
 print*, nstruc, midle-start, finish-midle
+=======
+call mpi_finalize(ierr)
+>>>>>>> Paralelizatu
 contains
 SUBROUTINE COSINE_DISTANCE(FING,FING2,NUMIONS,COS_DIST)
 IMPLICIT NONE
